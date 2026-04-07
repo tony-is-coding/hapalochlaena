@@ -18,9 +18,9 @@ cc_ee (Claude Code Enterprise Edition) 是构建在 cc_core 之上的企业级 S
 
 ## 核心设计原则
 
-- **零侵入 cc_core**：所有企业级能力通过 cc_core 原生扩展点实现，不修改 cc_core 代码
+- **最小侵入 cc_core**：仅改造 cc_core 的 STATE 并发安全性（约 40 个 getter 加 ALS 读取），其余企业级能力通过原生扩展点实现
 - **进程内集成**：cc_ee 与 cc_core 打包在同一进程，通过 `query()` API 直接调用
-- **应用层隔离**：单进程多 session，通过 `runWithCwdOverride` + HookCallback 实现租户隔离
+- **双层 ALS 隔离**：单进程多 session 真并发，通过 `runWithSessionOverride` + `runWithCwdOverride` + HookCallback 实现完全隔离
 
 ## 快速了解
 

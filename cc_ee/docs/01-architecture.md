@@ -132,11 +132,71 @@ SELECT total_budget, used FROM token_ledgers WHERE tenant_id = $1 AND period = $
 
 ---
 
-### 决策 7：并发 session 的 STATE.sessionId 竞态处理
+### 决策 7：cc_core 全局 STATE 并发安全改造
 
-**背景**：`switchSession()` 修改全局 `STATE.sessionId`，并发调用会导致 transcript 路径混乱。
+**背景**：cc_core 的原生并发模型是**多进程**——本地 `claude` CLI 每个终端窗口是独立 OS 进程，`STATE` 天然隔离。cc_ee 要在**单进程内**托管多 session，面临的根本问题是：`STATE` 是进程级单例，包含约 60 个字段，其中约 40 个是 session 级状态（如 `sessionId`、`originalCwd`、`modelUsage`、`sessionBypassPermissionsMode` 等），全部通过 getter/setter 直接读写，没有任何 per-async-context 隔离。
 
-**方案**：每个 cc_ee worker 进程串行处理 session（不并发调用 `switchSession()`）。多 worker 进程水平扩展。
+**方案**：扩展 `runWithCwdOverride` 已有的 `AsyncLocalStorage` 模式，增加 `runWithSessionOverride`：
+
+```typescript
+// cc_core/utils/sessionState.ts（新增）
+const sessionStateStorage = new AsyncLocalStorage<SessionContext>()
+
+// SessionContext = STATE 中约 40 个 session 级字段的子集
+type SessionContext = {
+  sessionId: SessionId
+  sessionProjectDir: string | null
+  originalCwd: string
+  projectRoot: string
+  modelUsage: { [modelName: string]: ModelUsage }
+  totalCostUSD: number
+  sessionBypassPermissionsMode: boolean
+  // ... 其余 session 级字段
+  // module-level vars（outputTokensAtTurnStart 等）也迁入此处
+}
+
+export function runWithSessionOverride<T>(ctx: SessionContext, fn: () => T): T {
+  return sessionStateStorage.run(ctx, fn)
+}
+
+// 修改所有 session 级 getter，ALS 优先，fallback 全局（向后兼容）
+export function getSessionId(): SessionId {
+  return sessionStateStorage.getStore()?.sessionId ?? STATE.sessionId
+}
+```
+
+**改造范围**：
+- `cc_core/bootstrap/state.ts`：约 40 个 getter 各加一行 ALS 读取
+- `cc_core/utils/sessionState.ts`：新增文件，定义 `SessionContext` 类型和 `runWithSessionOverride`
+- 向后兼容：`getStore() == null` 时 fallback 全局 STATE，单进程单 session 场景无任何行为变更
+
+**cc_ee 侧变化**：
+```typescript
+// 改造前（串行，不并发）
+switchSession(sessionId)
+runWithCwdOverride(tenantCwd, () => query(params))
+
+// 改造后（并发安全，不需要串行）
+runWithSessionOverride(sessionContext, () =>
+  runWithCwdOverride(tenantCwd, () => query(params))
+)
+// 不再调用 switchSession()，不再需要串行化
+```
+
+**收益**：单进程内真正并发执行多 session，无需多 worker 进程扩展，彻底解除串行化约束。
+
+---
+
+### 决策 8：进程级共享 STATE 字段识别
+
+`STATE` 中以下字段**不需要**迁入 `SessionContext`，保持进程级共享：
+
+| 字段类型 | 示例字段 | 原因 |
+|---------|---------|------|
+| OTel 遥测 providers | `meter`, `loggerProvider`, `meterProvider`, `tracerProvider` | 进程级初始化一次，不变 |
+| `registeredHooks` | — | cc_ee 设计上就是进程全局 HookCallback |
+| 模型配置 | `modelStrings`, `sdkBetas`, `allowedSettingSources` | 进程启动时加载，所有 session 共享 |
+| 进程启动 flag | `isInteractive`, `clientType`, `isRemoteMode`, `inlinePlugins` 等 | 进程级，不变 |
 
 ---
 
@@ -148,6 +208,8 @@ SELECT total_budget, used FROM token_ledgers WHERE tenant_id = $1 AND period = $
 | Hook 方式 | HTTP hooks | managed-settings function hooks | registerHookCallbacks() HookCallback |
 | 动态错误消息 | ✓（HTTP 响应体）| ❌（FunctionHook 不支持）| ✓（HookCallback reason 字段）|
 | per-session cwd | 进程级隔离 | 未明确 | runWithCwdOverride() AsyncLocalStorage |
+| per-session 全局状态 | 进程级隔离 | 未明确 | runWithSessionOverride() AsyncLocalStorage（需改造 cc_core）|
+| 并发 session | 多进程 | 串行化 worker | 单进程真并发（改造 cc_core 后）|
 | token usage 来源 | PostToolUse HTTP body | PostToolUse hook usage 字段 | AssistantMessage.usage（generator）|
 | token 计数方式 | 无明确方案 | SELECT FOR UPDATE | 原子 UPDATE，乐观读 |
 | server 模式 | 不依赖 | 依赖（实为 stub）| 不依赖，直接 query() |

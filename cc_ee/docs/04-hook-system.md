@@ -1,6 +1,6 @@
 # Hook 拦截系统
 
-**版本**: 1.0（基于 2026-04-07 验证报告）
+**版本**: 2.0（加入 cc_core STATE 并发安全改造）
 
 ---
 
@@ -74,6 +74,7 @@ export function registerCcEeHooks(deps: HookDeps) {
 ```typescript
 function preToolUseCallback(deps: HookDeps) {
   return async (input: PreToolUseHookInput): Promise<HookJSONOutput> => {
+    // cc_core 改造后：getSessionId() 通过 AsyncLocalStorage 自动路由到当前 session
     const sessionId = getSessionId()
     const ctx = deps.sessionStore.get(sessionId)
     if (!ctx) return { decision: 'approve' }  // 非 cc_ee 管理的 session，放行

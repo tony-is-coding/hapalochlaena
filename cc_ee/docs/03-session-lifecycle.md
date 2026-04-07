@@ -102,7 +102,7 @@
 ## 3. Session 运行（每次用户消息）
 
 ```typescript
-// cc_ee 处理每次用户消息（串行，不并发）
+// cc_ee 处理每次用户消息（cc_core 改造后：并发安全）
 async function* handleTurn(
   sessionId: string,
   userMessage: string
@@ -117,11 +117,13 @@ async function* handleTurn(
   // 2. 构建 QueryParams
   const params = buildQueryParams(sessionId, tenantId, messages)
 
-  // 3. 切换 session（串行，修改全局 STATE）
-  switchSession(sessionId)
+  // 3. 构建 per-session STATE 上下文（从 DB 加载恢复状态）
+  const ctx = await buildSessionContext(sessionId)
 
-  // 4. 执行 query，per-session cwd 隔离
-  const gen = runWithCwdOverride(tenantCwd, () => query(params))
+  // 4. 在双层 ALS 上下文中并发执行 query（无需串行）
+  const gen = runWithSessionOverride(ctx, () =>
+    runWithCwdOverride(tenantCwd, () => query(params))
+  )
 
   // 5. 消费 generator
   for await (const event of gen) {
@@ -142,6 +144,8 @@ async function* handleTurn(
   }
 }
 ```
+
+**注意**：cc_core STATE 并发安全改造完成前（Phase 1a），`handleTurn` 需在 worker 内串行执行（每次调用前先 `await` 上一个 turn 完成）。改造完成后（Phase 2 前）直接并发调用，无需任何修改。
 
 ---
 
@@ -235,20 +239,35 @@ function buildQueryParams(
 
 ## 7. Session 并发模型
 
+### Phase 1a（cc_core 改造前）：串行模式
+
 ```
 cc_ee Pod（单进程）
   │
-  ├── Worker（串行处理 session）
-  │     ├── Turn 1: switchSession(A) → runWithCwdOverride(cwdA, query)
-  │     ├── Turn 2: switchSession(B) → runWithCwdOverride(cwdB, query)
-  │     └── Turn 3: switchSession(A) → runWithCwdOverride(cwdA, query)
+  ├── Worker 1（串行处理 session，同一时刻只有一个 turn 在执行）
+  │     ├── Turn: switchSession(A) → runWithCwdOverride(cwdA, query)  ← 等待完成
+  │     ├── Turn: switchSession(B) → runWithCwdOverride(cwdB, query)  ← 等待完成
+  │     └── Turn: switchSession(A) → runWithCwdOverride(cwdA, query)  ← 等待完成
   │
-  └── 多个 Worker 并行（通过 Node.js worker_threads 或多进程）
-        ├── Worker 1: 处理 Session A, C, E...
-        └── Worker 2: 处理 Session B, D, F...
+  └── Worker 2（独立进程/线程，同上）
+        ├── ...
+        └── ...
 ```
 
-**关键约束**：
-- `switchSession()` 在同一 Worker 内串行调用（不并发）
-- `runWithCwdOverride()` 基于 AsyncLocalStorage，同一 Worker 内可以并发（但 switchSession 不行）
-- 不同 Worker 之间完全独立，无共享状态（除 PostgreSQL）
+### Phase 2+（cc_core 改造后）：真并发模式
+
+```
+cc_ee Pod（单进程）
+  │
+  └── 单 Worker（并发处理多 session，无串行约束）
+        ├── Turn A: runWithSessionOverride(ctxA, () => runWithCwdOverride(cwdA, query))
+        ├── Turn B: runWithSessionOverride(ctxB, () => runWithCwdOverride(cwdB, query))
+        └── Turn C: runWithSessionOverride(ctxC, () => runWithCwdOverride(cwdC, query))
+              ↑ 三个 turn 同时运行，AsyncLocalStorage 确保各 session 的 STATE 完全隔离
+```
+
+**关键特性**（改造后）：
+- `getSessionId()` 在任意 async context 中返回当前 session 的 ID（无竞态）
+- `getOriginalCwd()` / `getProjectRoot()` 等 per-session getter 同样 ALS 隔离
+- `sessionBypassPermissionsMode` 等安全关键字段不会跨 session 泄露
+- HookCallback 内部 `getSessionId()` 自动路由，无需额外 sessionStore 查询

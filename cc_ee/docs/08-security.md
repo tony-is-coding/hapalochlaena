@@ -1,6 +1,6 @@
 # 安全边界与隔离机制
 
-**版本**: 1.0
+**版本**: 2.0（cc_core 并发安全改造后）
 
 ---
 
@@ -8,7 +8,7 @@
 
 | 威胁 | 防御机制 | 层次 |
 |------|---------|------|
-| 租户间数据泄露 | `runWithCwdOverride` + 独立工作目录 | cc_ee 应用层 |
+| 租户间数据泄露 | `runWithSessionOverride` + `runWithCwdOverride` + 独立工作目录 | cc_ee 应用层 |
 | Token 超支 | PreToolUse HookCallback 乐观读预算 | cc_ee Hook 层 |
 | 恶意工具调用 | managed-settings.json 静态 deny + HookCallback 动态 deny | cc_core + cc_ee |
 | 用户注入恶意 hook | `allowManagedHooksOnly: true` | cc_core managed-settings |
@@ -21,22 +21,31 @@
 
 ## 2. 应用层隔离机制
 
-单进程多 session 架构下，隔离从进程级变为应用层：
+单进程多 session 真并发架构下，通过双层 AsyncLocalStorage 实现完全隔离：
 
-### 2.1 文件系统隔离
+### 2.1 双层 AsyncLocalStorage 隔离
 
 ```
 每个 session 独立工作目录：
   /sessions/{tenant_id}/{session_id}/
 
-runWithCwdOverride(tenantCwd, ...) 确保：
-  - cc_core 的文件操作默认在 tenantCwd 内
+runWithSessionOverride(sessionContext, () =>
+  runWithCwdOverride(tenantCwd, () => query())
+) 确保：
+  - cc_core 的所有 session 级 STATE 字段（sessionId、modelUsage、sessionBypassPermissionsMode 等）完全隔离
+  - 文件操作默认在 tenantCwd 内
   - getSkills(cwd) 从 tenantCwd 加载 skill，不跨 session
+  - HookCallback 内 getSessionId() 自动路由到当前 session
 
 managed-settings.json 的 permissions.additionalDirectories：
   - 限制 cc_core 可访问的目录范围
   - 防止 Agent 访问其他 tenant 的工作目录
 ```
+
+**关键安全特性**（cc_core 改造后）：
+- `sessionBypassPermissionsMode` 等安全关键字段不会跨 session 泄露
+- 并发 session 的 transcript 路径、token 计量、权限状态完全独立
+- AsyncLocalStorage 天然并发安全，无竞态风险
 
 ### 2.2 Session 上下文隔离
 

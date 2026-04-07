@@ -14,30 +14,37 @@
    - 创建 PostgreSQL schema（tenants, users, sessions, token_ledgers, tool_audit_logs, skills）
    - 初始化测试数据（1 个租户，1 个用户）
 
-2. **cc_core 集成层**
+2. **cc_core STATE 并发安全改造**（在 cc_core repo 进行）
+   - 新建 `src/utils/sessionState.ts`，定义 `SessionContext` 类型和 `runWithSessionOverride`
+   - 识别并迁移约 40 个 session 级字段：所有 getter 改为 `sessionStateStorage.getStore()?.field ?? STATE.field`
+   - 迁移 module-level 变量（`outputTokensAtTurnStart`, `currentTurnTokenBudget`, `budgetContinuationCount`）
+   - 检查 `settingsCache.ts`、`cronScheduler.ts` 等模块的全局缓存
+   - 单进程单 session 回归测试（`getStore() == null` fallback 路径）
+
+3. **cc_core 集成层**
    - cc_ee 与 cc_core 打包（package.json 依赖配置）
    - `initCcCore()`：进程启动时调用 `registerHookCallbacks()`
-   - `SessionRunner`：封装 `switchSession()` + `runWithCwdOverride()` + `query()`
+   - `SessionRunner`：封装 `runWithSessionOverride()` + `runWithCwdOverride()` + `query()`
    - 从 `AssistantMessage.usage` 读取 token usage，原子更新 token_ledgers
 
-3. **Session 生命周期管理**
+4. **Session 生命周期管理**
    - 创建 session 工作目录（`/sessions/{tenant_id}/{session_id}/`）
    - Skill 文件注入（`.claude/skills/*.md`）
    - Session 终止与 OSS 归档
    - Session 恢复（从 OSS 下载解压）
 
-4. **Hook 拦截**
+5. **Hook 拦截**
    - PreToolUse HookCallback：token 预算检查 + deny 规则检查 + 审计日志
    - PostToolUse HookCallback：更新 session last_active_at
 
-5. **Control Plane API**（Fastify）
+6. **Control Plane API**（Fastify）
    - `POST /api/tenants` — 创建租户
    - `POST /api/users` — 创建用户
    - `POST /api/sessions` — 创建 session
    - `POST /api/sessions/:id/query` — 发送消息（SSE 流式响应）
    - `DELETE /api/sessions/:id` — 终止 session
 
-6. **managed-settings.json**
+7. **managed-settings.json**
    - 配置 `allowManagedHooksOnly: true`
    - 配置平台级静态 deny 规则
 
@@ -49,6 +56,7 @@
 - [ ] token usage 从 AssistantMessage.usage 读取并写入 token_ledgers
 - [ ] Session 终止后能归档到 OSS
 - [ ] Session 能从 OSS 恢复并继续对话
+- [ ] cc_core 改造后：单进程内两个 session 并发 query，transcript 路径和 token 计数各自独立
 
 ---
 
@@ -87,12 +95,14 @@
 
 **目标**：多租户并发、token 预算限流、LLM Proxy 双重校验
 
+**前置条件**：cc_core STATE 并发安全改造已完成（Phase 1a 任务 2）
+
 ### 任务
 
-1. **多 session 并发**
-   - Worker 进程模型（每个 worker 串行处理 session）
-   - Session affinity 路由（同一 session 路由到同一 Pod）
-   - 进程级 sessionStore 并发安全
+1. **多 session 真并发**
+   - 切换为 `runWithSessionOverride` 并发模式（移除串行锁）
+   - 单进程内多 session 并发压测（目标：单 Pod 100+ 并发 session）
+   - 进程级 sessionStore 并发安全验证
 
 2. **Token 预算限流**
    - 月度账本自动初始化（月初 cron job）
@@ -221,7 +231,8 @@
 
 | 风险 | 影响 | 缓解措施 |
 |------|------|---------|
-| `switchSession()` 非并发安全 | 并发 session 切换导致 transcript 混乱 | 每个 worker 串行处理，Phase 5 优化 |
+| cc_core STATE 改造范围大 | 约 40 个 getter 需修改，遗漏导致 session 数据混乱 | 分批改造 + 并发集成测试验证每个字段 |
+| cc_core 改造前的串行瓶颈 | 单 Pod 并发能力受限 | Phase 1a 串行模式可用，Phase 2 前完成改造 |
 | 乐观读允许极小超支 | 租户短暂超支 | Phase 2 LLM Proxy 对账补偿 |
 | cc_core 版本升级 | API 不兼容 | 版本锁定，升级前测试环境验证 |
 | 应用层隔离（非进程级） | 隔离强度低于进程级 | 严格文件访问限制 + deny 规则 + 定期安全审计 |
