@@ -194,7 +194,34 @@ registerHookCallbacks({
 })
 ```
 
-cc_ee 在创建 session 时，通过 `setAppState` 将 `tenantId` 写入 `AppState`，hook callback 通过 `context.getAppState()` 读取，实现 per-session 路由。
+**⚠️ 修正**：`AppState` 是严格类型化的（`DeepImmutable<{...}>`），cc_ee 无法添加自定义字段。
+
+正确方案：cc_ee 维护一个进程级 `Map<sessionId, tenantId>`，在创建 session 时写入。hook callback 通过 `input.session_id`（每个 `HookInput` 都包含此字段，来自 `createBaseHookInput`）查表：
+
+```typescript
+// cc_ee 进程级映射
+const sessionTenantMap = new Map<string, string>()
+
+// 创建 session 时
+sessionTenantMap.set(sessionId, tenantId)
+
+// hook callback 中
+registerHookCallbacks({
+  PreToolUse: [{
+    matcher: '*',
+    hooks: [{
+      type: 'callback',
+      callback: async (input) => {
+        const tenantId = sessionTenantMap.get(input.session_id)
+        if (!tenantId) return { decision: 'approve' }
+        const budgetOk = await checkBudget(tenantId)
+        if (!budgetOk) return { decision: 'block', reason: 'Token budget exhausted' }
+        return { decision: 'approve' }
+      }
+    }]
+  }]
+})
+```
 
 ---
 
@@ -254,11 +281,26 @@ export function getSettingsWithErrors(): SettingsWithErrors {
 
 ## 4. Token 计数机制验证
 
-### 4.1 PostToolUse Hook 的 usage 字段
+### 4.1 Token Usage 的正确获取位置
 
-**源码位置**: `src/entrypoints/agentSdkTypes.ts`（PostToolUseHookInput 类型）
+**⚠️ 修正**：`PostToolUseHookInput` **不包含** `usage` 字段。PostToolUse hook 只有 `tool_name`、`tool_input`、`tool_response`、`tool_use_id`。
 
-PostToolUse hook 的输入包含 `usage` 字段，包含 `input_tokens` 和 `output_tokens`。这与我们的设计一致。
+Token usage 在 `query()` yield 出的 `AssistantMessage` 中：
+
+```typescript
+// AssistantMessage.message.usage 包含 token 计数
+// 在 message_delta 事件后写入（streaming 结束时）
+for await (const event of query(params)) {
+  if (event.type === 'assistant' && event.message?.usage) {
+    const usage = event.message.usage
+    // usage.input_tokens, usage.output_tokens
+    // usage.cache_read_input_tokens, usage.cache_creation_input_tokens
+    await recordTokenUsage(sessionId, usage)
+  }
+}
+```
+
+**结论**：cc_ee 在消费 `query()` 的 async generator 时，从 `AssistantMessage` 中读取 usage 并累计到 token ledger，而不是通过 PostToolUse hook。
 
 ### 4.2 SELECT FOR UPDATE 的适用性
 
