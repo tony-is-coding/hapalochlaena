@@ -483,8 +483,8 @@ RETURNING used, total_budget;
 
 1. ~~**cc_core server 模式 API**~~ **已确认**：`src/server/server.ts` 和 `src/server/sessionManager.ts` 均为自动生成的 stub（3 行，无实际实现）。server 模式在此版本中**不可用**。cc_ee 只能通过 `query()` API 直接集成。
 2. ~~**HookCallback 注册接口**~~ **已确认**：`registerHookCallbacks(hooks)` 写入 `STATE.registeredHooks`，支持多次调用（merge 语义）。`HookCallbackMatcher = { matcher?: string, hooks: HookCallback[], pluginName?: string }`。
-3. **Session 工作目录配置**：`query()` 的 `options` 参数是否支持 per-session `cwd`？需确认。
-4. **Skill 加载时机**：`query()` 调用时 skill 是从哪个目录加载的？
+3. ~~**Session 工作目录配置**~~ **已确认**：`utils/cwd.ts` 提供 `runWithCwdOverride(cwd, fn)`，基于 `AsyncLocalStorage` 实现。注释明确说明"enables concurrent agents to each see their own working directory without affecting each other"。cc_ee 可以用 `runWithCwdOverride(tenantCwd, () => query(params))` 为每个 session 设置独立的 cwd，完全不影响全局 `STATE.cwd`。
+4. ~~**Skill 加载时机**~~ **已确认**：`loadSkillsDir.ts` 的 `getSkills(cwd)` 接受 `cwd` 参数，从 `cwd` 向上遍历查找 `.claude/skills/`。skill 是**按 cwd 动态加载**的（每次 query 时），不是进程启动时全局加载。结合 `runWithCwdOverride`，cc_ee 可以为每个 tenant 设置独立的工作目录，skill 会自动从该目录加载。
 
 ---
 
@@ -501,5 +501,7 @@ RETURNING used, total_budget;
 | AppState 可存自定义字段（tenantId） | ❌ 严格类型化，不支持扩展 | 改用进程级 Map<sessionId, tenantId> |
 | token usage 在 PostToolUse hook 中 | ❌ PostToolUseHookInput 无 usage 字段 | 从 query() yield 的 AssistantMessage.usage 读取 |
 | PostgreSQL 行级锁防竞态 | ✅ 可行，但可优化为原子 UPDATE | 建议优化 |
+| per-session cwd 隔离 | ✅ `runWithCwdOverride(cwd, fn)` 基于 AsyncLocalStorage，并发安全 | 直接使用，无需修改 |
+| skill 按 cwd 动态加载 | ✅ `getSkills(cwd)` 每次 query 时从 cwd 向上遍历 `.claude/skills/` | 结合 runWithCwdOverride 实现 per-tenant skill 隔离 |
 
-**核心结论**：cc_ee 的集成方式是直接调用 `query()` API（不是 server 模式），hook 通过 `registerHookCallbacks()` 进程内注册，token usage 从 `AssistantMessage.usage` 读取，tenantId 路由通过进程级 `Map<sessionId, tenantId>` 实现。架构方向正确，实现细节需按上述修正调整。
+**核心结论**：cc_ee 的集成方式是直接调用 `query()` API（不是 server 模式），用 `runWithCwdOverride` 实现 per-tenant cwd 和 skill 隔离，hook 通过 `registerHookCallbacks()` 进程内注册，token usage 从 `AssistantMessage.usage` 读取，tenantId 路由通过进程级 `Map<sessionId, tenantId>` 实现。所有待验证问题已全部确认，验证报告完整。
