@@ -127,52 +127,74 @@ export type HookCallback = {
 
 ## 2. Session 管理机制验证
 
-### 2.1 cc_core 的实际运行模式
+### 2.1 cc_core 的集成模式（cc_ee 打包场景）
 
-**源码位置**: `src/bridge/sessionRunner.ts`
+cc_ee 与 cc_core 打包在一起，cc_ee 是宿主进程，cc_core 作为库被直接引入（不是 spawn 子进程）。
 
-cc_core 的 bridge 模式通过以下方式启动子进程：
+**bridge 模式**（`src/bridge/sessionRunner.ts`）是 Claude.ai Web UI 的接入方式，每个 session spawn 一个子进程——这不是 cc_ee 的集成方式。
+
+**cc_ee 的集成方式**：直接调用 cc_core 的 `query()` API：
 
 ```typescript
-const args = [
-  '--print',
-  '--sdk-url', opts.sdkUrl,
-  '--session-id', opts.sessionId,
-  '--input-format', 'stream-json',
-  '--output-format', 'stream-json',
-  '--replay-user-messages',
-]
+import { query } from 'cc_core/query'
+import { init } from 'cc_core/entrypoints/init'
+import { switchSession } from 'cc_core/bootstrap/state'
 
-const child = spawn(deps.execPath, args, {
-  cwd: dir,
-  stdio: ['pipe', 'pipe', 'pipe'],
-  env,
+// 进程启动时初始化一次
+await init()
+
+// 每个 session 请求
+switchSession(sessionId)
+for await (const message of query({ messages, systemPrompt, toolUseContext, ... })) {
+  // 处理流式输出
+}
+```
+
+### 2.2 单进程多 session 的隔离机制
+
+**源码位置**: `src/state/AppState.tsx`, `src/state/AppStateStore.ts`
+
+cc_core 的 session 状态（`AppState`）是通过 **React `useState` + `createStore`** 创建的，每个 session 有独立的 store 实例。`getAppState`/`setAppState` 是绑定到各自 store 的闭包，通过 `ToolUseContext` 传递给 `query()`。
+
+**关键区分**：
+- `STATE`（`src/bootstrap/state.ts`）：进程级全局状态，包含 `sessionId`、`registeredHooks` 等
+- `AppState`（`src/state/AppStateStore.ts`）：session 级状态，包含权限、工具状态、session hooks 等
+
+`STATE.sessionId` 是全局的，但 `AppState` 是 per-session 的。cc_ee 在同一进程内并发运行多个 session 时，每个 session 有独立的 `AppState` 实例，通过 `ToolUseContext` 传入 `query()`。
+
+### 2.3 并发 session 的可行性
+
+**验证通过**：cc_ee 可以在同一进程内并发运行多个 session，因为：
+1. `AppState`（session 核心状态）是 per-session 的闭包，不共享
+2. `ToolUseContext`（包含 `getAppState`/`setAppState`）是 per-session 的，传入 `query()` 时各自独立
+3. `STATE.sessionId` 是全局的，但只用于 transcript 路径等辅助功能，不影响核心逻辑
+
+**注意**：`STATE.sessionId` 的全局性意味着在并发场景下，`getSessionId()` 可能返回错误的 session ID。cc_ee 需要避免依赖 `getSessionId()` 来识别当前 session，而应通过 `ToolUseContext` 传递 session 信息。
+
+### 2.4 HookCallback 的全局注册与 per-session 路由
+
+`registerHookCallbacks()` 写入 `STATE.registeredHooks`（全局），所以 cc_ee 注册的 `HookCallback` 对所有 session 生效。这正是我们想要的：
+
+```typescript
+// 进程启动时注册一次，对所有 session 生效
+registerHookCallbacks({
+  PreToolUse: [{
+    matcher: '*',
+    hooks: [{
+      type: 'callback',
+      callback: async (input, toolUseID, signal, hookIndex, context) => {
+        // context.getAppState() 返回当前 session 的 AppState
+        // 从 AppState 中读取 tenantId（cc_ee 在 session 创建时写入）
+        const appState = context?.getAppState()
+        const tenantId = appState?.ccEETenantId  // cc_ee 自定义字段
+        // ... 检查 token 预算、权限等
+      }
+    }]
+  }]
 })
 ```
 
-**关键发现**：cc_core 的 bridge 模式是**每个 session 一个子进程**（`spawn` 一个新进程），通过 stdin/stdout 的 NDJSON 流通信。
-
-这与我们架构文档中"单进程多 session"的假设**存在差异**。
-
-### 2.2 单进程多 session 的实际实现
-
-**源码位置**: `src/server/sessionManager.ts`, `src/server/server.ts`
-
-cc_core 的 server 模式（`--server` 标志）才是真正的单进程多 session 架构。Server 模式：
-- 启动一个 HTTP/WebSocket 服务器
-- 每个 session 在同一进程内作为独立的 React 渲染树运行
-- 通过 `sessionManager.ts` 管理多个并发 session
-
-**结论**：cc_ee 应该以 **server 模式**集成 cc_core，而不是 bridge 模式（bridge 是一个进程一个 session）。
-
-### 2.3 Session 上下文隔离
-
-cc_core server 模式中，每个 session 有独立的：
-- `AppState`（通过 `sessionHooks` Map 按 sessionId 隔离）
-- 工作目录（`cwd`）
-- Hook 配置（从各自的 managed-settings.json 加载）
-
-**验证通过**：session 间的状态隔离是通过 `Map<sessionId, SessionStore>` 实现的，cc_ee 可以安全地在同一进程内运行多个租户的 session。
+cc_ee 在创建 session 时，通过 `setAppState` 将 `tenantId` 写入 `AppState`，hook callback 通过 `context.getAppState()` 读取，实现 per-session 路由。
 
 ---
 
