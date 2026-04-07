@@ -481,10 +481,10 @@ RETURNING used, total_budget;
 
 ## 7. 待进一步验证的问题
 
-1. **cc_core server 模式 API**：需要阅读 `src/server/server.ts` 和 `src/server/sessionManager.ts`，确认 server 模式的启动方式和 session 管理 API
-2. **HookCallback 注册接口**：`getRegisteredHooks()` 和对应的 `registerHooks()` 的完整 API，确认 cc_ee 如何在进程启动时注册全局 hooks
-3. **Session 工作目录配置**：server 模式下如何为每个 session 指定独立的工作目录
-4. **Skill 加载时机**：server 模式下 skill 是在 session 启动时加载还是进程启动时加载
+1. ~~**cc_core server 模式 API**~~ **已确认**：`src/server/server.ts` 和 `src/server/sessionManager.ts` 均为自动生成的 stub（3 行，无实际实现）。server 模式在此版本中**不可用**。cc_ee 只能通过 `query()` API 直接集成。
+2. ~~**HookCallback 注册接口**~~ **已确认**：`registerHookCallbacks(hooks)` 写入 `STATE.registeredHooks`，支持多次调用（merge 语义）。`HookCallbackMatcher = { matcher?: string, hooks: HookCallback[], pluginName?: string }`。
+3. **Session 工作目录配置**：`query()` 的 `options` 参数是否支持 per-session `cwd`？需确认。
+4. **Skill 加载时机**：`query()` 调用时 skill 是从哪个目录加载的？
 
 ---
 
@@ -496,7 +496,10 @@ RETURNING used, total_budget;
 | managed-settings.json 可 per-session | ❌ 全局路径，所有 session 共享 | 需改用进程内 HookCallback |
 | `allowManagedHooksOnly` 可锁定 hooks | ✅ 验证通过 | 无需修改 |
 | Settings 缓存可动态更新 | ❌ 有缓存，修改不立即生效 | 改用 HookCallback 后此问题消失 |
-| 单进程多 session 可行 | ✅ server 模式支持 | 需确认 server API |
+| 单进程多 session 可行（server 模式） | ❌ server 模式是 stub，不可用 | 改用 query() API，每次调用前 switchSession() |
+| 并发 session 的 STATE.sessionId 竞态 | ⚠️ transcript 路径会混乱，核心功能不受影响 | 推荐每个 worker 进程顺序处理 session |
+| AppState 可存自定义字段（tenantId） | ❌ 严格类型化，不支持扩展 | 改用进程级 Map<sessionId, tenantId> |
+| token usage 在 PostToolUse hook 中 | ❌ PostToolUseHookInput 无 usage 字段 | 从 query() yield 的 AssistantMessage.usage 读取 |
 | PostgreSQL 行级锁防竞态 | ✅ 可行，但可优化为原子 UPDATE | 建议优化 |
 
-**核心结论**：架构方向正确，但 Hook 注册机制需要从"managed-settings.json 注入"改为"cc_ee 进程内 HookCallback 注册"。这实际上是更优的方案——零文件 I/O、动态消息、完整 session 上下文访问。
+**核心结论**：cc_ee 的集成方式是直接调用 `query()` API（不是 server 模式），hook 通过 `registerHookCallbacks()` 进程内注册，token usage 从 `AssistantMessage.usage` 读取，tenantId 路由通过进程级 `Map<sessionId, tenantId>` 实现。架构方向正确，实现细节需按上述修正调整。
