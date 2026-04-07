@@ -162,14 +162,23 @@ cc_core 的 session 状态（`AppState`）是通过 **React `useState` + `create
 
 `STATE.sessionId` 是全局的，但 `AppState` 是 per-session 的。cc_ee 在同一进程内并发运行多个 session 时，每个 session 有独立的 `AppState` 实例，通过 `ToolUseContext` 传入 `query()`。
 
-### 2.3 并发 session 的可行性
+### 2.3 并发 session 的可行性与限制
 
-**验证通过**：cc_ee 可以在同一进程内并发运行多个 session，因为：
+**部分验证通过**：cc_ee 可以在同一进程内并发运行多个 session，因为：
 1. `AppState`（session 核心状态）是 per-session 的闭包，不共享
 2. `ToolUseContext`（包含 `getAppState`/`setAppState`）是 per-session 的，传入 `query()` 时各自独立
-3. `STATE.sessionId` 是全局的，但只用于 transcript 路径等辅助功能，不影响核心逻辑
 
-**注意**：`STATE.sessionId` 的全局性意味着在并发场景下，`getSessionId()` 可能返回错误的 session ID。cc_ee 需要避免依赖 `getSessionId()` 来识别当前 session，而应通过 `ToolUseContext` 传递 session 信息。
+**已知竞态风险**：`STATE.sessionId` 是全局的，多个并发 session 会互相覆盖。受影响的功能：
+
+- `getTranscriptPathForSession(sessionId)` 在 `sessionId === getSessionId()` 时使用 `STATE.sessionProjectDir`，并发时可能返回错误路径（transcript 写入错误文件）
+- `history.ts` 的 `getSessionId()` 调用会读到错误的 session ID
+- hook 的 `input.session_id` 来自 `getSessionId()`，并发时可能返回错误值
+
+**对 cc_ee 核心功能的影响**：
+- token 计数：cc_ee 直接从 `query()` async generator 读取 `AssistantMessage.usage`，不依赖 `STATE.sessionId`，**不受影响**
+- 权限控制（PreToolUse hook）：hook 的 `input.session_id` 可能不准确，但 cc_ee 可以用 `Map<sessionId, tenantId>` 在 `query()` 调用前设置好映射，hook 通过 `input.session_id` 查表——只要 `switchSession()` 在 `query()` 调用前执行，`STATE.sessionId` 在单个 turn 内是稳定的（JavaScript 是单线程的，`await` 点之间不会被打断）
+
+**推荐方案**：cc_ee 使用**顺序处理**（每个 worker 进程一次只处理一个 session），或者接受 transcript 路径可能混乱的副作用（对核心功能无影响）。
 
 ### 2.4 HookCallback 的全局注册与 per-session 路由
 
