@@ -16,16 +16,25 @@
     "schema": "src/database/schema.prisma"
   },
   "dependencies": {
+    "@aws-sdk/client-s3": "^3.540.0",
     "@fastify/cors": "^9.0.1",
     "@fastify/jwt": "^8.0.0",
+    "@fastify/websocket": "^8.3.1",
     "@prisma/client": "^5.11.0",
-    "fastify": "^4.26.2",
     "bcrypt": "^5.1.1",
+    "dotenv": "^16.4.5",
+    "fastify": "^4.26.2",
+    "fs-extra": "^11.2.0",
+    "pg": "^8.11.3",
+    "uuid": "^9.0.1",
     "zod": "^3.22.4"
   },
   "devDependencies": {
     "@types/bcrypt": "^5.0.2",
+    "@types/fs-extra": "^11.0.4",
     "@types/node": "^20.11.30",
+    "@types/pg": "^8.11.2",
+    "@types/uuid": "^9.0.8",
     "prisma": "^5.11.0",
     "tsx": "^4.7.1",
     "typescript": "^5.4.3",
