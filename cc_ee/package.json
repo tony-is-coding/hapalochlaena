@@ -10,7 +10,8 @@
     "db:generate": "prisma generate",
     "db:migrate": "prisma migrate dev",
     "db:seed": "tsx src/database/seed.ts",
-    "test": "vitest"
+    "test": "vitest",
+    "migrate": "tsx migrations/run.ts"
   },
   "prisma": {
     "schema": "src/database/schema.prisma"
