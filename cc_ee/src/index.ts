@@ -6,9 +6,11 @@ import { authRoutes } from './api/routes/auth'
 import { sessionRoutes } from './api/routes/sessions'
 import { tenantRoutes } from './api/routes/tenants'
 import { userRoutes } from './api/routes/users'
+import { initCcCore } from './core/ccCoreIntegration'
 
 async function start() {
   const fastify = Fastify({ logger: true })
+  initCcCore(config.ccCore.baseCwd)
 
   await fastify.register(fastifyJwt, { secret: config.jwtSecret })
   await fastify.register(fastifyCors, { origin: true, credentials: true })

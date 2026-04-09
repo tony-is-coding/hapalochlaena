@@ -34,6 +34,12 @@ class SessionService {
     fs.remove(session.workingDir).catch(console.error)
   }
 
+  async getSession(sessionId: string, tenantId: string) {
+    const session = await sessionRepo.findById(sessionId)
+    if (!session || session.tenantId !== tenantId) return null
+    return session
+  }
+
   async listSessions(tenantId: string, userId: string) {
     return sessionRepo.findByTenantAndUser(tenantId, userId)
   }

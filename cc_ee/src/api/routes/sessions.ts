@@ -1,6 +1,7 @@
 import { FastifyInstance } from 'fastify'
 import { sessionService } from '../../services/session.service'
 import { authMiddleware } from '../middleware/auth'
+import { handleTurn } from '../../core/ccCoreIntegration'
 
 export async function sessionRoutes(fastify: FastifyInstance) {
   // Create session
@@ -17,10 +18,14 @@ export async function sessionRoutes(fastify: FastifyInstance) {
     return sessionService.listSessions(tenantId, userId)
   })
 
-  // Send message (stub - returns SSE stream placeholder)
+  // Send message — streams cc_core events as SSE
   fastify.post('/api/sessions/:sessionId/query', { preHandler: [authMiddleware] }, async (request, reply) => {
     const { sessionId } = request.params as any
     const { message } = request.body as any
+    const { tenantId } = request.user as any
+
+    const session = await sessionService.getSession(sessionId, tenantId)
+    if (!session) return reply.code(404).send({ error: 'Session not found' })
 
     reply.raw.writeHead(200, {
       'Content-Type': 'text/event-stream',
@@ -28,9 +33,10 @@ export async function sessionRoutes(fastify: FastifyInstance) {
       'Connection': 'keep-alive',
     })
 
-    // Stub response - cc_core integration to be wired in Phase 2
-    reply.raw.write(`data: ${JSON.stringify({ type: 'assistant', content: `[stub] Echo: ${message}` })}\n\n`)
-    reply.raw.write(`data: ${JSON.stringify({ type: 'done' })}\n\n`)
+    const messages = [{ role: 'user' as const, content: message }]
+    for await (const chunk of handleTurn({ sessionId, tenantId, workingDir: session.workingDir, messages })) {
+      reply.raw.write(chunk)
+    }
     reply.raw.end()
   })
 
