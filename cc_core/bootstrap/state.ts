@@ -429,7 +429,9 @@ function getInitialState(): State {
 const STATE: State = getInitialState()
 
 export function getSessionId(): SessionId {
-  return STATE.sessionId
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const { getSessionOverride } = require('../utils/sessionOverride.js')
+  return getSessionOverride()?.sessionId ?? STATE.sessionId
 }
 
 export function regenerateSessionId(
