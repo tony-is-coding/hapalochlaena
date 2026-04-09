@@ -17,10 +17,20 @@ export default function MessageList({ messages, isStreaming }: MessageListProps)
   }, [messages])
 
   return (
-    <div style={{ flex: 1, overflowY: 'auto', padding: '16px', display: 'flex', flexDirection: 'column', gap: '12px' }}>
+    <div
+      role="log"
+      aria-label="Chat messages"
+      aria-live="polite"
+      style={{ flex: 1, overflowY: 'auto', padding: '16px', display: 'flex', flexDirection: 'column', gap: '12px' }}
+    >
+      {messages.length === 0 && !isStreaming && (
+        <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'rgba(0,0,0,0.35)', fontSize: '14px' }}>
+          Send a message to start the conversation
+        </div>
+      )}
       {messages.map((msg, i) => (
         <div
-          key={i}
+          key={`${msg.role}-${msg.timestamp}-${i}`}
           style={{
             display: 'flex',
             justifyContent: msg.role === 'user' ? 'flex-end' : 'flex-start',

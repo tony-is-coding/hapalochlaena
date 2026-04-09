@@ -33,6 +33,7 @@ export default function InputBox({ onSend, disabled }: InputBoxProps) {
         value={message}
         onChange={(e) => setMessage(e.target.value)}
         onKeyDown={handleKeyDown}
+        aria-label="Message input"
         placeholder="Type a message... (Enter to send, Shift+Enter for newline)"
         autoSize={{ minRows: 1, maxRows: 4 }}
         disabled={disabled}
