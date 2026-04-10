@@ -51,3 +51,9 @@ Thumbs.db
 
 # Claude Code
 .claude/
+
+# Git worktrees
+.worktrees/
+
+# Git worktrees
+.worktrees/

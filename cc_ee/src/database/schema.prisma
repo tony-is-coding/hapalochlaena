@@ -1,0 +1,107 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model Tenant {
+  id                  String   @id @default(uuid())
+  name                String
+  status              String   @default("active")
+  tokenBudgetMonthly  Int      @map("token_budget_monthly")
+  enabledSkillIds     Json?    @map("enabled_skill_ids")
+  permissionRules     Json?    @map("permission_rules")
+  createdAt           DateTime @default(now()) @map("created_at")
+  updatedAt           DateTime @updatedAt @map("updated_at")
+
+  users         User[]
+  sessions      Session[]
+  tokenLedgers  TokenLedger[]
+  auditLogs     ToolAuditLog[]
+
+  @@map("tenants")
+}
+
+model User {
+  id           String   @id @default(uuid())
+  tenantId     String   @map("tenant_id")
+  email        String   @unique
+  passwordHash String   @map("password_hash")
+  role         String   @default("member")
+  createdAt    DateTime @default(now()) @map("created_at")
+  updatedAt    DateTime @updatedAt @map("updated_at")
+
+  tenant    Tenant        @relation(fields: [tenantId], references: [id])
+  sessions  Session[]
+  auditLogs ToolAuditLog[]
+
+  @@map("users")
+}
+
+model Session {
+  id             String    @id @default(uuid())
+  tenantId       String    @map("tenant_id")
+  userId         String    @map("user_id")
+  workingDir     String    @map("working_dir")
+  status         String    @default("active")
+  nodeId         String?   @map("node_id")
+  ossArchivePath String?   @map("oss_archive_path")
+  createdAt      DateTime  @default(now()) @map("created_at")
+  updatedAt      DateTime  @updatedAt @map("updated_at")
+  lastActiveAt   DateTime? @map("last_active_at")
+
+  tenant    Tenant         @relation(fields: [tenantId], references: [id])
+  user      User           @relation(fields: [userId], references: [id])
+  auditLogs ToolAuditLog[]
+
+  @@map("sessions")
+}
+
+model TokenLedger {
+  tenantId      String   @map("tenant_id")
+  period        String
+  totalBudget   Int      @map("total_budget")
+  used          Int      @default(0)
+  lastUpdatedAt DateTime @updatedAt @map("last_updated_at")
+
+  tenant Tenant @relation(fields: [tenantId], references: [id])
+
+  @@id([tenantId, period])
+  @@map("token_ledgers")
+}
+
+model ToolAuditLog {
+  id            String   @id @default(uuid())
+  sessionId     String   @map("session_id")
+  tenantId      String   @map("tenant_id")
+  userId        String   @map("user_id")
+  toolName      String   @map("tool_name")
+  inputSnapshot Json?    @map("input_snapshot")
+  hookDecision  String   @map("hook_decision")
+  blockReason   String?  @map("block_reason")
+  matchedRule   String?  @map("matched_rule")
+  timestamp     DateTime @default(now())
+
+  session Session @relation(fields: [sessionId], references: [id])
+  tenant  Tenant  @relation(fields: [tenantId], references: [id])
+  user    User    @relation(fields: [userId], references: [id])
+
+  @@map("tool_audit_logs")
+}
+
+model Skill {
+  id           String   @id @default(uuid())
+  name         String
+  slug         String   @unique
+  content      String
+  isOfficial   Boolean  @default(false) @map("is_official")
+  allowedTools Json?    @map("allowed_tools")
+  version      String
+  createdAt    DateTime @default(now()) @map("created_at")
+  updatedAt    DateTime @updatedAt @map("updated_at")
+
+  @@map("skills")
+}
