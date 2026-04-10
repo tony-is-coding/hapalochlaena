@@ -31,15 +31,15 @@ export function initCcCore(baseCwd: string): void {
           if (!tenantId) return { decision: 'approve' }
 
           try {
+            const period = new Date().toISOString().slice(0, 7) // YYYY-MM
             const result = await pool.query(
-              `SELECT token_budget, tokens_used FROM token_ledgers
-               WHERE tenant_id = $1
-               ORDER BY period_start DESC LIMIT 1`,
-              [tenantId],
+              `SELECT total_budget, used FROM token_ledgers
+               WHERE tenant_id = $1 AND period = $2`,
+              [tenantId, period],
             )
             if (result.rows.length === 0) return { decision: 'approve' }
-            const { token_budget, tokens_used } = result.rows[0]
-            if (token_budget !== null && tokens_used >= token_budget) {
+            const { total_budget, used } = result.rows[0]
+            if (total_budget !== null && used >= total_budget) {
               return { decision: 'block', reason: 'Token budget exhausted for this tenant' }
             }
           } catch (err) {
@@ -133,11 +133,11 @@ export async function* handleTurn(params: {
         const totalTokens = (usage.input_tokens ?? 0) + (usage.output_tokens ?? 0)
         if (totalTokens > 0) {
           pool.query(
-            `INSERT INTO token_ledgers (tenant_id, tokens_used, period_start)
-             VALUES ($1, $2, date_trunc('month', now()))
-             ON CONFLICT (tenant_id, period_start)
-             DO UPDATE SET tokens_used = token_ledgers.tokens_used + $2`,
-            [tenantId, totalTokens],
+            `INSERT INTO token_ledgers (tenant_id, period, total_budget, used)
+             VALUES ($1, $2, 0, $3)
+             ON CONFLICT (tenant_id, period)
+             DO UPDATE SET used = token_ledgers.used + $3`,
+            [tenantId, new Date().toISOString().slice(0, 7), totalTokens],
           ).catch((err: any) => console.error('[ccCoreIntegration] token ledger update failed:', err))
         }
       }

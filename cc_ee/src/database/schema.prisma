@@ -28,7 +28,7 @@ model Tenant {
 model User {
   id           String   @id @default(uuid())
   tenantId     String   @map("tenant_id")
-  email        String   @unique
+  email        String
   passwordHash String   @map("password_hash")
   role         String   @default("member")
   createdAt    DateTime @default(now()) @map("created_at")
@@ -38,6 +38,7 @@ model User {
   sessions  Session[]
   auditLogs ToolAuditLog[]
 
+  @@unique([tenantId, email])
   @@map("users")
 }
 
