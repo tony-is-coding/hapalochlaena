@@ -19,8 +19,12 @@ export class UserRepository {
     return result.rows[0] ? this.mapRow(result.rows[0]) : null
   }
 
-  async findByEmail(email: string): Promise<User | null> {
-    const result = await pool.query('SELECT * FROM users WHERE email = $1', [email])
+  // Issue #6: findByEmail must filter by tenantId to prevent cross-tenant identity confusion
+  async findByEmail(email: string, tenantId: string): Promise<User | null> {
+    const result = await pool.query(
+      'SELECT * FROM users WHERE email = $1 AND tenant_id = $2',
+      [email, tenantId]
+    )
     return result.rows[0] ? this.mapRow(result.rows[0]) : null
   }
 

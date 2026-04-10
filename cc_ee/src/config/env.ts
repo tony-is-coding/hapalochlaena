@@ -1,10 +1,16 @@
 import { config as dotenvConfig } from 'dotenv'
 dotenvConfig()
 
+// Issue #4: Enforce JWT_SECRET in production
+const jwtSecret = process.env.JWT_SECRET || 'change-me-in-production'
+if (!process.env.JWT_SECRET && process.env.NODE_ENV === 'production') {
+  throw new Error('JWT_SECRET environment variable must be set in production')
+}
+
 export const config = {
   port: parseInt(process.env.PORT || '3000', 10),
   nodeEnv: process.env.NODE_ENV || 'development',
-  jwtSecret: process.env.JWT_SECRET || 'change-me-in-production',
+  jwtSecret,
 
   database: {
     host: process.env.DATABASE_HOST || 'localhost',
